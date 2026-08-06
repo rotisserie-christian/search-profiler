@@ -119,6 +119,29 @@ def main() -> None:
         default=None,
         help="Path to a previously fetched raw_reviews JSON file — skips live fetch"
     )
+    parser.add_argument(
+        "--cluster-method",
+        type=str,
+        choices=["nlp-llm", "nlp", "hybrid", "seeded", "llm"],
+        default="nlp",
+        help="Reviews clustering: 'nlp' (local only, default), "
+             "'nlp-llm' (local clusters + Replicate titles), "
+             "'seeded' (fixed landscaping themes), "
+             "'hybrid' (LLM proposes themes then local assign), "
+             "or 'llm' (legacy one-shot)"
+    )
+    parser.add_argument(
+        "--distance-threshold",
+        type=float,
+        default=0.48,
+        help="Cosine distance threshold for NLP review clustering (default: 0.48)"
+    )
+    parser.add_argument(
+        "--max-themes",
+        type=int,
+        default=35,
+        help="Max theme clusters for hybrid reviews output (default: 35)"
+    )
 
     args = parser.parse_args()
 
@@ -221,13 +244,20 @@ def main() -> None:
 
     # Reviews
     if args.reviews:
-        if not args.query:
-            logger.error("--reviews requires --query 'your search term'")
+        if not args.query and not args.load_raw:
+            logger.error("--reviews requires --query or --load-raw")
             return
 
         try:
             from src.reviews import run_reviews
-            run_reviews(args.query, args.type, load_raw_path=args.load_raw)
+            run_reviews(
+                args.query,
+                args.type,
+                load_raw_path=args.load_raw,
+                method=args.cluster_method,
+                distance_threshold=args.distance_threshold,
+                max_themes=args.max_themes,
+            )
         except Exception:
             logger.exception("Reviews pipeline failed")
 

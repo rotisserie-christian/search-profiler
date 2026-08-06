@@ -156,19 +156,51 @@ python main.py --joyplot output/joyplottermsN.csv --date "today 12-m"
 
 ## Google Maps Reviews
 
-Semantically cluster and analyze business reviews from Google Maps to surface recurring customer feedback themes, strengths, and weaknesses.
+Cluster business reviews from Google Maps to surface recurring feedback themes for a scatterplot (**x** = average star score, **y** = prevalence %).
+
+### Recommended quality pipeline (`nlp-llm`)
+
+Coverage stays local over the **entire** review dump; Replicate is used only to name clusters:
+
+```
+full review dump
+  → local NLP: sentence split + cluster (entire set)     ← coverage
+  → for each cluster: send 3–5 example sentences
+  → LLM: return a 2–5 word title (+ Strength/Weakness) ← titles only
+  → keep local score / prevalence (already computed)
+  → scatter JSON
+```
+
+```bash
+python main.py --reviews --load-raw output/raw_reviews/latest_fetch.json --cluster-method nlp-llm
+```
+
+Needs `REPLICATE_API_TOKEN` and Replicate credit. Does **not** re-fetch reviews when using `--load-raw`.
+
+### Local only (`nlp`, default)
+
+Same clustering/scoring, automatic phrase labels (no Replicate):
+
+```bash
+python main.py --reviews --load-raw output/raw_reviews/latest_fetch.json --cluster-method nlp
+```
+
+### Other methods
+- **`seeded`** — fixed landscaping theme list + local assignment  
+- **`hybrid`** — LLM proposes themes from a sample, then local assignment (fallback to seeded)  
+- **`llm`** — legacy one-shot Replicate over all review text  
 
 ### Live Fetch
-Query Google Maps for businesses in a market, retrieve their highest/lowest reviews, and run LLM semantic clustering:
 ```bash
 python main.py --reviews --query "<business> in <location>" --type "<business_type>"
 ```
 
-### Cached Replay
-Re-run LLM semantic clustering and analytical metric passes locally using previously fetched raw JSON to save API credits:
-```bash
-python main.py --reviews --query "any-label" --load-raw output/raw_reviews/latest_fetch.json
-```
+### Output
+`output/reviews/review_scatterN.json` (dual-view):
+- **`points`** (primary / pain): weakness themes; **y** = prevalence among ≤2★ reviews  
+- **`market.points`**: all themes; **y** = prevalence among all reviews  
+
+Optional: `--max-themes 25`, `--distance-threshold 0.48`.
 
 ## Dependencies 
 - **`Replicate`** - LLM API

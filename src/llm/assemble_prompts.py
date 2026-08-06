@@ -134,3 +134,75 @@ OUTPUT FORMAT (JSON):
   }}
 ]
 """
+
+
+def build_review_theme_prompt(review_texts: List[str], max_themes: int = 35) -> str:
+    """
+    Compact prompt: ask the LLM only for pointed theme labels (no match lists).
+    Metrics are computed later in code.
+    """
+    reviews_block = "\n".join([f"- {r}" for r in review_texts])
+    return f"""
+You analyze Google Maps reviews for landscaping / hardscaping companies.
+
+REVIEWS (sampled, truncated):
+{reviews_block}
+
+TASK:
+Extract recurring SPECIFIC feedback themes customers actually mention.
+Return at most {max_themes} themes (aim for 20–{max_themes}).
+
+Rules:
+- Labels must be 2–5 words and concrete (e.g. "Missed deadlines", "Clean job site", "Hidden extra fees").
+- Avoid vague praise: "great service", "highly recommend", "excellent work", "amazing team".
+- Cover both strengths and weaknesses when the reviews support them.
+- Only include themes that clearly appear in more than one review.
+- Do NOT list matching reviews. Labels and type only.
+
+OUTPUT FORMAT (JSON array only, no markdown):
+[
+  {{"feedback": "2-5 word label", "type": "Strength"}},
+  {{"feedback": "2-5 word label", "type": "Weakness"}}
+]
+"""
+
+
+def build_cluster_title_prompt(clusters: List[dict]) -> str:
+    """
+    Ask the LLM only to rename existing clusters from example sentences.
+    Coverage/scoring stay local; this pass is titles (+ optional type).
+    """
+    blocks = []
+    for c in clusters:
+        examples = c.get("examples") or []
+        ex_lines = "\n".join(f"    - {e}" for e in examples[:5])
+        blocks.append(
+            f"CLUSTER {c['id']}\n"
+            f"  current_label: {c.get('label', '')}\n"
+            f"  current_type: {c.get('type', '')}\n"
+            f"  examples:\n{ex_lines}"
+        )
+    clusters_block = "\n\n".join(blocks)
+    return f"""
+You rename review-feedback clusters for a product analytics scatterplot.
+
+Each cluster was already discovered from the FULL review set using local NLP.
+Your job is ONLY to give each cluster a clear 2-5 word title and confirm Strength/Weakness.
+
+CLUSTERS:
+{clusters_block}
+
+Rules:
+- Title must be concrete and specific (e.g. "Missed deadlines", "Clean job site", "No callbacks").
+- Do NOT use business/person names.
+- Avoid vague phrases: "great service", "highly recommend", "stay away", "bad experience".
+- Prefer issue/outcome language over generic praise or insults.
+- Keep Strength vs Weakness consistent with the examples.
+- Return one object per cluster id. Do not invent new clusters. Do not omit any id.
+
+OUTPUT FORMAT (JSON array only, no markdown):
+[
+  {{"id": 0, "feedback": "2-5 word label", "type": "Strength"}},
+  {{"id": 1, "feedback": "2-5 word label", "type": "Weakness"}}
+]
+"""

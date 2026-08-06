@@ -179,6 +179,7 @@ def save_clustered_queries_to_json(
 def save_reviews_to_json(
     clusters: List[Dict],
     output_root: Path | str = "output",
+    prefix: str = "reviews",
 ) -> Path:
     """
     Write semantic review clusters to a new JSON file.
@@ -189,7 +190,7 @@ def save_reviews_to_json(
     # Simple sequential naming
     n = 1
     while True:
-        candidate = output_dir / f"reviews{n}.json"
+        candidate = output_dir / f"{prefix}{n}.json"
         if not candidate.exists():
             output_path = candidate
             break
@@ -199,3 +200,13 @@ def save_reviews_to_json(
         json.dump(clusters, f, indent=2, ensure_ascii=False)
     
     return output_path
+
+
+def save_review_scatter_to_json(
+    payload: Dict,
+    output_root: Path | str = "output",
+) -> Path:
+    """
+    Write scatterplot-ready review theme clusters (x=score, y=prevalence).
+    """
+    return save_reviews_to_json(payload, output_root=output_root, prefix="review_scatter")
