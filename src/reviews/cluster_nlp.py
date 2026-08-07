@@ -48,6 +48,29 @@ GENERIC_PRAISE = re.compile(
     re.I,
 )
 
+# Generic rant / warning language without a concrete operational issue
+JUNK_RANT = re.compile(
+    r"\b("
+    r"stay away|steering clear|do not (hire|trust)|don'?t (hire|trust)|"
+    r"would not recommend|do not recommend|don'?t recommend|"
+    r"worst company|horrible company|terrible company|"
+    r"bad experience|deeply disappointing|regret (using|hiring)"
+    r")\b",
+    re.I,
+)
+
+OPERATIONAL_CUES = re.compile(
+    r"\b("
+    r"callback|call back|voicemail|phone|email|communicat|"
+    r"deadline|schedule|on time|late|delay|no[- ]show|show up|"
+    r"snow|driveway|damage|deposit|price|quote|permit|grading|"
+    r"quality|workmanship|cleanup|debris|design|budget|unfinished|"
+    r"abandoned|incomplete|rude|unprofessional|warranty|refund|"
+    r"plant|garden|hardscape|retaining|crew|project manager"
+    r")\b",
+    re.I,
+)
+
 
 def flatten_reviews(raw_data: List[Dict]) -> List[Dict]:
     """Extract review records with stable ids from a raw SerpApi fetch."""
@@ -221,7 +244,11 @@ def _cluster_band(
     }
 
 
-def _merge_similar_points(points: List[Dict], model: SentenceTransformer) -> List[Dict]:
+def _merge_similar_points(
+    points: List[Dict],
+    model: SentenceTransformer,
+    sim_threshold: float = LABEL_MERGE_SIM,
+) -> List[Dict]:
     if len(points) <= 1:
         return points
     labels = [p["label"] for p in points]
@@ -238,16 +265,67 @@ def _merge_similar_points(points: List[Dict], model: SentenceTransformer) -> Lis
         for j in range(i + 1, len(points)):
             if j in used:
                 continue
-            if float(sims[i, j]) >= LABEL_MERGE_SIM and p["type"] == points[j]["type"]:
+            if float(sims[i, j]) >= sim_threshold and p["type"] == points[j]["type"]:
                 group.append(j)
                 used.add(j)
         used.add(i)
-        # Keep the highest-prevalence member as canonical
-        best = max(group, key=lambda k: points[k]["prevalence_all"])
+        best = max(
+            group,
+            key=lambda k: (
+                points[k].get("prevalence_among_low", 0),
+                points[k].get("prevalence_all", 0),
+            ),
+        )
         keep = dict(points[best])
-        # Union review counts roughly via max prevalence fields already on best
+        if len(group) > 1:
+            keep["sentence_count"] = sum(points[k].get("sentence_count", 0) for k in group)
+            keep["review_count"] = max(points[k].get("review_count", 0) for k in group)
+            keep["low_review_count"] = max(
+                points[k].get("low_review_count", 0) for k in group
+            )
+            keep["prevalence_all"] = max(
+                points[k].get("prevalence_all", 0) for k in group
+            )
+            keep["prevalence_among_low"] = max(
+                points[k].get("prevalence_among_low", 0) for k in group
+            )
+            keep["prevalence"] = keep.get("prevalence_all", keep.get("prevalence", 0))
+            keep["y"] = keep["prevalence"]
+            examples = []
+            seen = set()
+            for k in group:
+                for ex in points[k].get("examples") or []:
+                    if ex in seen:
+                        continue
+                    examples.append(ex)
+                    seen.add(ex)
+                    if len(examples) >= MAX_EXAMPLES:
+                        break
+                if len(examples) >= MAX_EXAMPLES:
+                    break
+            keep["examples"] = examples
         merged.append(keep)
     return merged
+
+
+def is_junk_cluster(point: Dict) -> bool:
+    """
+    True when examples/label are generic rants/warnings with no operational cue.
+    """
+    blob = " ".join(
+        [str(point.get("label") or "")] + list(point.get("examples") or [])
+    )
+    if not JUNK_RANT.search(blob):
+        return False
+    return OPERATIONAL_CUES.search(blob) is None
+
+
+def filter_junk_clusters(points: List[Dict]) -> List[Dict]:
+    kept = [p for p in points if not is_junk_cluster(p)]
+    dropped = len(points) - len(kept)
+    if dropped:
+        print(f"Dropped {dropped} junk clusters (generic rant / no operational detail)")
+    return kept
 
 
 def cluster_review_feedback(
@@ -395,6 +473,8 @@ def cluster_review_feedback(
         if pt:
             high_points.append(pt)
 
+    low_points = filter_junk_clusters(low_points)
+    high_points = filter_junk_clusters(high_points)
     low_points = _merge_similar_points(low_points, model)
     high_points = _merge_similar_points(high_points, model)
     low_points.sort(key=lambda p: (-p["prevalence_among_low"], p["score"]))
@@ -404,6 +484,8 @@ def cluster_review_feedback(
     pain_slots = max(10, max_themes // 3)
     strength_slots = max_themes - min(pain_slots, len(low_points))
     market_points = low_points[:pain_slots] + high_points[:strength_slots]
+    market_points = filter_junk_clusters(market_points)
+    market_points = _merge_similar_points(market_points, model, sim_threshold=LABEL_MERGE_SIM)
     market_points.sort(key=lambda p: (-p["prevalence_all"], p["score"]))
     for i, p in enumerate(market_points):
         p["id"] = i
@@ -491,10 +573,65 @@ def _parse_title_response(raw: str) -> Dict[int, Dict]:
         if not label:
             continue
         hinted = (item.get("type") or "").strip().title()
+        if hinted == "Discard" or label.lower() == "discard":
+            out[int(item["id"])] = {"feedback": "Discard", "type": "Discard"}
+            continue
         if hinted not in ("Strength", "Weakness", "Mixed"):
             hinted = None
         out[int(item["id"])] = {"feedback": label, "type": hinted}
     return out
+
+
+def apply_title_map(payload: Dict, title_map: Dict[int, Dict]) -> Dict:
+    """
+    Apply a title map (from LLM or manual stand-in), drop Discard, merge near-dupes.
+    """
+    market_points = list((payload.get("market") or {}).get("points") or payload.get("points") or [])
+    if not market_points:
+        return payload
+
+    kept = []
+    discarded = 0
+    for p in market_points:
+        update = title_map.get(int(p["id"]))
+        if update and update.get("type") == "Discard":
+            discarded += 1
+            continue
+        if update:
+            p = dict(p)
+            p["label"] = update["feedback"]
+            p["feedback"] = update["feedback"]
+            if update.get("type"):
+                p["type"] = update["type"]
+        # Post-title junk check (vague banlist titles)
+        if is_junk_cluster(p):
+            discarded += 1
+            continue
+        kept.append(p)
+
+    if discarded:
+        print(f"Discarded {discarded} clusters after title pass")
+
+    print("Merging near-duplicate titles...")
+    model = SentenceTransformer(MODEL_NAME)
+    kept = _merge_similar_points(kept, model, sim_threshold=0.80)
+    kept.sort(key=lambda p: (-p.get("prevalence_all", 0), p.get("score", 0)))
+    for i, p in enumerate(kept):
+        p["id"] = i
+        # Refresh scatter y for market view
+        p["y"] = p.get("prevalence_all", p.get("y", 0))
+        p["prevalence"] = p["y"]
+
+    if payload.get("market") is not None:
+        payload["market"]["points"] = kept
+        payload["points"] = _rebuild_pain_points(kept)
+    else:
+        payload["points"] = kept
+
+    meta = payload.setdefault("meta", {})
+    meta["clusters_kept"] = len(payload.get("points") or [])
+    meta["market_clusters"] = len(kept)
+    return payload
 
 
 def _rebuild_pain_points(market_points: List[Dict]) -> List[Dict]:
@@ -523,10 +660,18 @@ def retitle_payload_with_llm(payload: Dict) -> Dict:
 
     market_points = (payload.get("market") or {}).get("points") or []
     if not market_points:
-        # Fall back to primary points if market view missing
         market_points = payload.get("points") or []
     if not market_points:
         return payload
+
+    # Hygiene before spending tokens
+    market_points = filter_junk_clusters(market_points)
+    for i, p in enumerate(market_points):
+        p["id"] = i
+    if payload.get("market") is not None:
+        payload["market"]["points"] = market_points
+    else:
+        payload["points"] = market_points
 
     clusters_for_prompt = [
         {
@@ -543,25 +688,9 @@ def retitle_payload_with_llm(payload: Dict) -> Dict:
     title_map = _parse_title_response(raw)
     print(f"LLM returned titles for {len(title_map)} clusters")
 
-    for p in market_points:
-        update = title_map.get(int(p["id"]))
-        if not update:
-            continue
-        p["label"] = update["feedback"]
-        p["feedback"] = update["feedback"]
-        if update.get("type"):
-            p["type"] = update["type"]
-
-    if payload.get("market") is not None:
-        payload["market"]["points"] = market_points
-        payload["points"] = _rebuild_pain_points(market_points)
-    else:
-        payload["points"] = market_points
-
+    payload = apply_title_map(payload, title_map)
     meta = payload.setdefault("meta", {})
     meta["method"] = "local nlp clusters + replicate titles"
     meta["title_pass"] = "replicate"
-    meta["credits_used"] = meta.get("credits_used", 0)  # SerpAPI; Replicate billed separately
-    meta["clusters_kept"] = len(payload.get("points") or [])
-    meta["market_clusters"] = len(market_points)
+    meta["credits_used"] = meta.get("credits_used", 0)
     return payload

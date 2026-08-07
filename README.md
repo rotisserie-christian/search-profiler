@@ -164,12 +164,16 @@ Coverage stays local over the **entire** review dump; Replicate is used only to 
 
 ```
 full review dump
-  → local NLP: sentence split + cluster (entire set)     ← coverage
+  → local NLP: sentence split + cluster (entire set)    
+  → filter junk / merge near-duplicate clusters          
   → for each cluster: send 3–5 example sentences
-  → LLM: return a 2–5 word title (+ Strength/Weakness) ← titles only
+  → LLM: actionable 2–5 word title (+ Strength/Weakness/Discard)
+  → merge similar titles + drop Discard                  
   → keep local score / prevalence (already computed)
   → scatter JSON
 ```
+
+Junk clusters (generic “stay away” / “would not recommend” with no operational detail) are dropped before titling when possible. The LLM may also mark a cluster `Discard` if examples cannot support a concrete theme.
 
 ```bash
 python main.py --reviews --load-raw output/raw_reviews/latest_fetch.json --cluster-method nlp-llm

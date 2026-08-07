@@ -170,7 +170,7 @@ OUTPUT FORMAT (JSON array only, no markdown):
 def build_cluster_title_prompt(clusters: List[dict]) -> str:
     """
     Ask the LLM only to rename existing clusters from example sentences.
-    Coverage/scoring stay local; this pass is titles (+ optional type).
+    Coverage/scoring stay local; this pass is titles (+ optional type/Discard).
     """
     blocks = []
     for c in clusters:
@@ -187,22 +187,24 @@ def build_cluster_title_prompt(clusters: List[dict]) -> str:
 You rename review-feedback clusters for a product analytics scatterplot.
 
 Each cluster was already discovered from the FULL review set using local NLP.
-Your job is ONLY to give each cluster a clear 2-5 word title and confirm Strength/Weakness.
+Your job is ONLY to title each cluster — or discard it if it is not actionable.
 
 CLUSTERS:
 {clusters_block}
 
 Rules:
-- Title must be concrete and specific (e.g. "Missed deadlines", "Clean job site", "No callbacks").
-- Do NOT use business/person names.
-- Avoid vague phrases: "great service", "highly recommend", "stay away", "bad experience".
-- Prefer issue/outcome language over generic praise or insults.
-- Keep Strength vs Weakness consistent with the examples.
+- Title must name a concrete operational failure or success (noun + outcome), e.g. "No callbacks", "Missed snow visits", "On time delivery".
+- Do NOT use business or person names.
+- Ban vague titles: "great service", "bad experience", "stay away", "highly recommend", "would not recommend", "disappointed", "terrible company".
+- If examples are only generic rants/warnings with no specific issue, return type "Discard" and feedback "Discard".
+- Do not invent details that are not supported by the examples.
+- Keep Strength vs Weakness consistent with the examples when not Discarding.
 - Return one object per cluster id. Do not invent new clusters. Do not omit any id.
 
 OUTPUT FORMAT (JSON array only, no markdown):
 [
   {{"id": 0, "feedback": "2-5 word label", "type": "Strength"}},
-  {{"id": 1, "feedback": "2-5 word label", "type": "Weakness"}}
+  {{"id": 1, "feedback": "2-5 word label", "type": "Weakness"}},
+  {{"id": 2, "feedback": "Discard", "type": "Discard"}}
 ]
 """
