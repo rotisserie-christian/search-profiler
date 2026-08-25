@@ -1,6 +1,6 @@
 # Semantic Maps
 
-This is my market research toolkit, it can be used for a few different things:
+This is my keyword research toolkit, it can be used for a few different things:
 
 #### Brainstorm
 Generate a preliminary list of keywords based on the search behaviour of a given user persona
